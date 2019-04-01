@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Example ECR Repositories
+
+Resources:
+  # ECR Repository for Website
+  Website:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: ecsexample/website
+      LifecyclePolicy:
+        LifecyclePolicyText: '{
+          "rules": [
+            {
+              "rulePriority": 10,
+              "description": "Removed untagged images older than 1 day",
+              "selection": {
+                "tagStatus": "untagged",
+                "countType": "sinceImagePushed",
+                "countUnit": "days",
+                "countNumber": 1
+              },
+              "action": {
+                "type": "expire"
+              }
+            }
+          ]
+        }'

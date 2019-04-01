@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Example - Fargate Service
+
+Parameters:
+  Application:
+    AllowedPattern: '[a-z]+'
+    Description: Application Name (lowercase), prefix in Domain Name
+    Type: String
+  ContainerImage:
+    Description: Container Image including version
+    Type: String
+  ContainerPort:
+    Default: 80
+    Description: Port the container exposes
+    Type: Number
+  HealthCheckPath:
+    Default: /
+    Description: Path to call for ALB Target Group healthcheck
+    Type: String
+  HealthCheckResponseCode:
+    Default: '200'
+    Description: HTTP Status Code expected from healthcheck
+    Type: String
+  ListenerRulePriority:
+    Description: Unique Listener Rule Priority for shared ALB Listener
+    Type: Number
+  PrivateSubnetIds:
+    Description: Private Subnets used for Fargate Tasks
+    Type: List<AWS::EC2::Subnet::Id>
+  PublicDomain:
+    Description: DNS Domain in which, which will be prefixed by Application to create DNS Alias
+    Type: String
+  PublicHostedZoneId:
+    Description: Public Hosted Zone Id, into which DNS Alias will be placed
+    Type: String
+  VpcId:
+    Description: VPC identifier in which resources will be created
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  # Log Group for Application
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub EcsExample/${Application}
+      RetentionInDays: 1
+
+  # ECS Task Definition for running in Fargate
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+      - Essential: True
+        Image: !Ref ContainerImage
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref LogGroup
+            awslogs-region: !Ref 'AWS::Region'
+            awslogs-stream-prefix: service
+        Memory: 50
+        Name: !Ref Application
+        PortMappings:
+        - ContainerPort: !Ref ContainerPort
+          HostPort: 80
+      Cpu: '256'
+      ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+      - FARGATE
+
+  # Application Load Balancer Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: !Ref HealthCheckResponseCode
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '60'
+      TargetType: ip
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VpcId
+
+  # Application Load Balancer Listener Rule, based upon host header
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref TargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - !Sub ${Application}.${PublicDomain}
+      ListenerArn: !ImportValue ECSClusterFargate-Listener
+      Priority: !Ref ListenerRulePriority
+
+  # ECS Service running in Fargate
+  Service:
+    DependsOn: ListenerRule
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !ImportValue ECSClusterFargate-ECSCluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      LoadBalancers:
+      - ContainerName: !Ref Application
+        ContainerPort: 80
+        TargetGroupArn: !Ref TargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !ImportValue ECSClusterFargate-FargateSecurityGroup
+          Subnets: !Ref PrivateSubnetIds
+      TaskDefinition: !Ref TaskDefinition
+
+  # Route 53 alias for shared Loadbalancer combines application name and public domain
+  # This alias must match the certificate that was used on the listener
+  Route53Alias:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !ImportValue ECSClusterFargate-LoadBalancer-DNSName
+        EvaluateTargetHealth: False
+        HostedZoneId: !ImportValue ECSClusterFargate-LoadBalancer-CanonicalHostedZoneID
+      Comment: User Alias
+      HostedZoneId: !Ref PublicHostedZoneId
+      Name: !Sub ${Application}.${PublicDomain}.
+      Type: A
