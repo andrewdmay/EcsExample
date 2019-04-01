@@ -38,6 +38,28 @@ Parameters:
     Type: AWS::EC2::VPC::Id
 
 Resources:
+  # IAM Role used by ECS Task, in this example we just give it permission to list buckets in the account
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - ecs-tasks.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: parameter-store-permissions
+        PolicyDocument:
+          Statement:
+            - Action:
+                - s3:ListAllMyBuckets
+              Effect: Allow
+              Resource: '*'
+
   # Log Group for Application
   LogGroup:
     Type: AWS::Logs::LogGroup
@@ -68,7 +90,8 @@ Resources:
       Memory: '512'
       NetworkMode: awsvpc
       RequiresCompatibilities:
-      - FARGATE
+        - FARGATE
+      TaskRoleArn: !Ref TaskRole
 
   # Application Load Balancer Target Group
   TargetGroup:
@@ -101,7 +124,7 @@ Resources:
       - Field: host-header
         Values:
         - !Sub ${Application}.${PublicDomain}
-      ListenerArn: !ImportValue ECSClusterFargate-Listener
+      ListenerArn: !ImportValue EcsClusterFargate-Listener
       Priority: !Ref ListenerRulePriority
 
   # ECS Service running in Fargate
@@ -109,7 +132,7 @@ Resources:
     DependsOn: ListenerRule
     Type: AWS::ECS::Service
     Properties:
-      Cluster: !ImportValue ECSClusterFargate-ECSCluster
+      Cluster: !ImportValue EcsClusterFargate-EcsCluster
       DesiredCount: 1
       LaunchType: FARGATE
       LoadBalancers:
@@ -119,7 +142,7 @@ Resources:
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
-            - !ImportValue ECSClusterFargate-FargateSecurityGroup
+            - !ImportValue EcsClusterFargate-FargateSecurityGroup
           Subnets: !Ref PrivateSubnetIds
       TaskDefinition: !Ref TaskDefinition
 
@@ -129,9 +152,9 @@ Resources:
     Type: AWS::Route53::RecordSet
     Properties:
       AliasTarget:
-        DNSName: !ImportValue ECSClusterFargate-LoadBalancer-DNSName
+        DNSName: !ImportValue EcsClusterFargate-LoadBalancer-DNSName
         EvaluateTargetHealth: False
-        HostedZoneId: !ImportValue ECSClusterFargate-LoadBalancer-CanonicalHostedZoneID
+        HostedZoneId: !ImportValue EcsClusterFargate-LoadBalancer-CanonicalHostedZoneID
       Comment: User Alias
       HostedZoneId: !Ref PublicHostedZoneId
       Name: !Sub ${Application}.${PublicDomain}.

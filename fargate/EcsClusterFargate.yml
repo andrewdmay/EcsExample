@@ -14,20 +14,22 @@ Parameters:
 
 Resources:
   # ECS Cluster which will contain the ECS Services
-  ECSCluster:
+  EcsCluster:
     Type: AWS::ECS::Cluster
 
   # Security Group for Application Load Balancer allowing access from all IP Addresses on Port 80 for HTTP and 443 for HTTPS
-  ALBSecurityGroup:
+  AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ECSClusterFargate-ALB Security Group
+      GroupDescription: EcsClusterFargate-ALB Security Group
       SecurityGroupIngress:
         - CidrIp: 0.0.0.0/0
+          Description: Allow HTTP (will be redirected to HTTPS)
           FromPort: 80
           IpProtocol: TCP
           ToPort: 80
         - CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS
           FromPort: 443
           IpProtocol: TCP
           ToPort: 443
@@ -37,12 +39,13 @@ Resources:
   FargateSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ECSClusterFargate-Fargate Security Group
+      GroupDescription: EcsClusterFargate-Fargate Security Group
       SecurityGroupIngress:
-        - FromPort: 80
+        - Description: Allow HTTP from ALB
+          FromPort: 80
           IpProtocol: TCP
           ToPort: 80
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
       VpcId: !Ref VpcId
 
   # Shared Application Load Balancer
@@ -54,7 +57,7 @@ Resources:
         Value: '60'
       Scheme: internet-facing
       SecurityGroups:
-      - !Ref ALBSecurityGroup
+      - !Ref AlbSecurityGroup
       Subnets: !Ref PublicSubnetIds
 
   # Default Target group for Application Load Balancer, this will not contain any services
@@ -66,7 +69,7 @@ Resources:
       VpcId: !Ref VpcId
 
   # HTTPS Listener for shared Application Load Balancer
-  Listener:
+  HttpsListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       Certificates:
@@ -79,7 +82,7 @@ Resources:
       Protocol: HTTPS
 
   # HTTP Listener that redirects HTTP -> HTTPS
-  HTTPListener:
+  HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
@@ -94,28 +97,28 @@ Resources:
 
 # Outputs include exports prefixed with ECSClusterFargate-
 Outputs:
-  ECSCluster:
+  EcsCluster:
     Description: ECS Cluster
-    Value: !Ref ECSCluster
+    Value: !Ref EcsCluster
     Export:
-      Name: ECSClusterFargate-ECSCluster
+      Name: EcsClusterFargate-EcsCluster
   FargateSecurityGroup:
     Description: Fargate Security Group
     Value: !Ref FargateSecurityGroup
     Export:
-      Name: ECSClusterFargate-FargateSecurityGroup
+      Name: EcsClusterFargate-FargateSecurityGroup
   Listener:
     Description: Load Balancer Listener
-    Value: !Ref Listener
+    Value: !Ref HttpsListener
     Export:
-      Name: ECSClusterFargate-Listener
+      Name: EcsClusterFargate-Listener
   LoadBalancerCanonicalHostedZoneID:
     Description: Load Balancer
     Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
     Export:
-      Name: ECSClusterFargate-LoadBalancer-CanonicalHostedZoneID
+      Name: EcsClusterFargate-LoadBalancer-CanonicalHostedZoneID
   LoadBalancerDNSName:
     Description: Load Balancer
     Value: !GetAtt LoadBalancer.DNSName
     Export:
-      Name: ECSClusterFargate-LoadBalancer-DNSName
+      Name: EcsClusterFargate-LoadBalancer-DNSName

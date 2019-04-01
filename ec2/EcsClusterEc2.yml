@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Example - ECS Cluster EC2
+
+Parameters:
+  CertificateArn:
+    Description: Certificate ARN used for shared Application Load Balancer HTTPS Listener
+    Type: String
+  EcsAmi:
+    Default: /aws/service/ecs/optimized-ami/amazon-linux/recommended/image_id
+    Description: ECS Optimized AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+  EcsInstanceType:
+    Default: t3.micro
+    Description: EC2 Instance Type used for ECS Cluster
+    Type: String
+  EcsAutoScalingGroupMin:
+    Default: '1'
+    Description: Minimum and initial number of EC2 instances in ECS Auto Scaling Group
+    Type: String
+  EcsAutoScalingGroupMax:
+    Default: '4'
+    Description: Maximum number of ECS instances in ECS Auto Scaling Group
+    Type: String
+  Ec2KeyPair:
+    Description: EC2 Key Pair used for EC2 instances in ECS Auto Scaling Group
+    Type: AWS::EC2::KeyPair::KeyName
+  PrivateSubnetIds:
+    Description: Private Subnets used for EC2 autoscaling group
+    Type: List<AWS::EC2::Subnet::Id>
+  PublicSubnetIds:
+    Description: Public Subnets used for Application Load Balancer
+    Type: List<AWS::EC2::Subnet::Id>
+  VpcId:
+    Description: VPC identifier in which resources will be created
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+
+  # IAM Role for EC2 instances in ECS Cluster
+  EcsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - ecs:RegisterContainerInstance
+            - ecs:DeregisterContainerInstance
+            - ecs:DiscoverPollEndpoint
+            - ecs:Submit*
+            - ecs:Poll
+            - ecs:StartTelemetrySession
+            - ecr:Get*
+            - ecr:BatchCheckLayerAvailability
+            - ecr:DescribeRepositories
+            - ecr:ListImages
+            - ecr:BatchGetImage
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Effect: Allow
+            Resource: '*'
+        PolicyName: ECSInstancePolicy
+
+  # IAM Profile for EC2 instances in ECS Cluster
+  EcsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EcsInstanceRole
+
+  # ECS Cluster which will contain the ECS Services
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+
+  # Security Group for Application Load Balancer allowing access from all IP Addresses on Port 80 for HTTP and 443 for HTTPS
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EcsClusterEc2-ALB Security Group
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: TCP
+          ToPort: 80
+        - CidrIp: 0.0.0.0/0
+          FromPort: 443
+          IpProtocol: TCP
+          ToPort: 443
+      VpcId: !Ref VpcId
+
+  # Security Group for EC2 instances that allows access on ephemeral ports from the ALB Security Group
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EcsClusterEc2-ECS Security Group
+      SecurityGroupIngress:
+        # - CidrIp: # VPC or Corporate CIDR
+        #   Description: Allow SSH
+        #   FromPort: 22
+        #   IpProtocol: TCP
+        #   ToPort: 22
+        - Description: Allow ephemeral ports from the ALB
+          FromPort: 1024
+          IpProtocol: TCP
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          ToPort: 65535
+      VpcId: !Ref VpcId
+
+  # Launch Configuration for AutoScaling group that registers EC2 instance with ECS Cluster
+  EcsLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      IamInstanceProfile: !Ref EcsInstanceProfile
+      ImageId: !Ref EcsAmi
+      InstanceType: !Ref EcsInstanceType
+      KeyName: !Ref Ec2KeyPair
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EcsAutoScalingGroup --region ${AWS::Region}
+
+  # EC2 AutoScaling group associated with ECS Cluster
+  EcsAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref EcsLaunchConfiguration
+      MaxSize: !Ref EcsAutoScalingGroupMax
+      MetricsCollection:
+        - Granularity: 1Minute
+      MinSize: !Ref EcsAutoScalingGroupMin
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: True
+          Value: !Sub ${EcsCluster} AutoScaling Group
+      VPCZoneIdentifier: !Ref PrivateSubnetIds
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: True
+
+  # Shared Application Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '60'
+      Scheme: internet-facing
+      SecurityGroups:
+      - !Ref AlbSecurityGroup
+      Subnets: !Ref PublicSubnetIds
+
+  # Default Target group for Application Load Balancer, this will not contain any services
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 443
+      Protocol: HTTPS
+      VpcId: !Ref VpcId
+
+  # HTTPS Listener for shared Application Load Balancer
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+      - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+      - TargetGroupArn: !Ref TargetGroup
+        Type: forward
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+
+  # HTTP Listener that redirects HTTP -> HTTPS
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - RedirectConfig:
+          Protocol: HTTPS
+          Port: '443'
+          StatusCode: HTTP_301
+        Type: redirect
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+# Outputs include exports prefixed with ECSClusterFargate-
+Outputs:
+  EcsCluster:
+    Description: ECS Cluster
+    Value: !Ref EcsCluster
+    Export:
+      Name: EcsClusterEC2-ECSCluster
+  Listener:
+    Description: Load Balancer Listener
+    Value: !Ref HttpsListener
+    Export:
+      Name: EcsClusterEc2-Listener
+  LoadBalancerCanonicalHostedZoneID:
+    Description: Load Balancer
+    Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: EcsClusterEc2-LoadBalancer-CanonicalHostedZoneID
+  LoadBalancerDNSName:
+    Description: Load Balancer
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: EcsClusterEc2-LoadBalancer-DNSName
